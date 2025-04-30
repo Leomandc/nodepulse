@@ -4,6 +4,10 @@ authors = []
 description = ""
 telemetry = false
 requirements = []
+[contracts.metric-verification]
+path = "contracts/metric-verification.clar"
+depends_on = []
+
 [contracts.node-registry]
 path = "contracts/node-registry.clar"
 depends_on = []
