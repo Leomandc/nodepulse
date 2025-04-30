@@ -8,6 +8,10 @@ requirements = []
 path = "contracts/node-registry.clar"
 depends_on = []
 
+[contracts.performance-reporting]
+path = "contracts/performance-reporting.clar"
+depends_on = []
+
 [repl]
 costs_version = 2
 parser_version = 2
