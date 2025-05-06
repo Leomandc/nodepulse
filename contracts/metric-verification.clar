@@ -82,7 +82,7 @@
   {
     node-id: (string-ascii 36),
     metric-id: (string-ascii 36),
-    block-height: uint
+    verification-block-height: uint
   }
   {
     value: uint,
@@ -103,7 +103,7 @@
           (merge metric {verified: true})
         )
         (map-set verified-metrics
-          {node-id: node-id, metric-id: metric-id, block-height: (get block-height metric)}
+          {node-id: node-id, metric-id: metric-id, verification-block-height: (get block-height metric)}
           {
             value: (get value metric),
             verification-count: (get verification-count metric),
@@ -134,14 +134,24 @@
   (let ((verifier-data (unwrap! (map-get? verifiers {verifier: verifier}) ERR-VERIFIER-NOT-REGISTERED)))
     (if is-anomaly
       ;; Penalize the verifier for submitting an anomalous value
-      (let ((new-reputation (max-int MIN-REPUTATION-SCORE (- (get reputation verifier-data) REPUTATION-PENALTY))))
+      (let ((
+            ;; Replace max-int with if logic, preventing underflow
+            new-reputation (if (< (get reputation verifier-data) REPUTATION-PENALTY)
+                                MIN-REPUTATION-SCORE
+                                (- (get reputation verifier-data) REPUTATION-PENALTY))
+          ))
         (map-set verifiers
           {verifier: verifier}
           (merge verifier-data {reputation: new-reputation})
         )
       )
       ;; Reward the verifier for a valid verification
-      (let ((new-reputation (min-int MAX-REPUTATION-SCORE (+ (get reputation verifier-data) REPUTATION-REWARD))))
+      (let ((
+            ;; Replace min-int with if logic
+            new-reputation (if (> (+ (get reputation verifier-data) REPUTATION-REWARD) MAX-REPUTATION-SCORE)
+                                MAX-REPUTATION-SCORE
+                                (+ (get reputation verifier-data) REPUTATION-REWARD))
+          ))
         (map-set verifiers
           {verifier: verifier}
           (merge verifier-data {reputation: new-reputation})
@@ -209,8 +219,8 @@
 )
 
 ;; Get verified metric at a specific block height
-(define-read-only (get-verified-metric (node-id (string-ascii 36)) (metric-id (string-ascii 36)) (block-height uint))
-  (map-get? verified-metrics {node-id: node-id, metric-id: metric-id, block-height: block-height})
+(define-read-only (get-verified-metric (node-id (string-ascii 36)) (metric-id (string-ascii 36)) (lookup-block-height uint))
+  (map-get? verified-metrics {node-id: node-id, metric-id: metric-id, verification-block-height: lookup-block-height})
 )
 
 ;; Public functions

@@ -134,7 +134,7 @@
     (let (
         (sender tx-sender)
     )
-    (if (map-get? nodes sender)
+    (if (is-some (map-get? nodes sender))
         (ok true)  ;; Already registered
         (begin
             (map-set nodes sender {
@@ -154,7 +154,7 @@
     (let (
         (sender tx-sender)
     )
-    (if (map-get? verifiers sender)
+    (if (is-some (map-get? verifiers sender))
         (ok true)  ;; Already registered
         (begin
             (map-set verifiers sender {
@@ -224,7 +224,7 @@
             )
             
             ;; If verified, update node performance metrics
-            (when verified
+            (if verified
                 (let (
                     (node-data (default-to { registered: false, last-reward-epoch: u0, uptime-score: u0, response-time-score: u0, community-rating: u0 } 
                                          (map-get? nodes node)))
@@ -241,6 +241,7 @@
                         community-rating: (get community-rating node-data)
                     })
                 )
+             true ;; Add the missing else branch
             )
             
             (ok true)
@@ -269,7 +270,7 @@
             )
             
             ;; Update verifier stats if submission was accurate
-            (when accurate
+            (if accurate
                 (map-set verifiers verifier {
                     registered: (get registered verifier-data),
                     last-reward-epoch: epoch,
@@ -277,7 +278,7 @@
                     total-validations: (get total-validations verifier-data),
                     reputation-score: (+ (get reputation-score verifier-data) u1)
                 })
-            )
+              true) ;; Use 'true' for the else branch when no action is needed
             
             (ok true)
         )

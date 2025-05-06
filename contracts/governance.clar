@@ -41,7 +41,8 @@
     votes-for: uint,
     votes-against: uint,
     status: (string-ascii 20), ;; "active", "passed", "rejected", "executed"
-    executed: bool
+    executed: bool,
+    target-dispute-id: (optional uint) ;; Add field for dispute resolution proposals
   }
 )
 
@@ -107,55 +108,40 @@
   )
 )
 
-(define-private (execute-proposal (proposal-id uint))
-  (match (map-get? proposals { proposal-id: proposal-id })
-    proposal (begin
-      (match (get proposal-type proposal)
-        PARAM-CHANGE (match (get parameter-key proposal)
-          key (match (get parameter-value proposal)
-            value (map-set system-parameters 
-                    { param-key: key } 
-                    { param-value: value })
-            true)
-          true)
-        PROTOCOL-UPGRADE true ;; Logic for protocol upgrade would go here
-        DISPUTE-RESOLUTION (execute-dispute-resolution proposal-id)
-        true) ;; Default case for invalid proposal types
-      (map-set proposals 
-        { proposal-id: proposal-id }
-        (merge proposal { status: "executed", executed: true }))
-      (ok true))
-    ERR-PROPOSAL-NOT-FOUND)
-)
 
-(define-private (execute-dispute-resolution (proposal-id uint))
-  ;; Find the dispute associated with this proposal
-  (fold check-and-resolve-dispute 
-        (ok true) 
-        (map-get? disputes 
-          { dispute-id: (match (map-get? proposals { proposal-id: proposal-id })
-              prop (unwrap-panic (get parameter-key prop))
-              "0")}))
-)
-
-(define-private (check-and-resolve-dispute (dispute (optional {
-    proposal-id: uint,
-    reporter: principal,
-    defendant: principal,
-    evidence: (string-utf8 1000),
-    resolution: (optional (string-utf8 500)),
-    resolved: bool
-  })) (prev-result (response bool uint)))
-  
-  (match dispute
-    disp (if (not (get resolved disp))
-          (match (map-get? proposals { proposal-id: (get proposal-id disp) })
-            prop (map-set disputes 
-                  { dispute-id: (unwrap-panic (get parameter-key prop)) }
-                  (merge disp { resolution: (get parameter-value prop), resolved: true }))
-            prev-result)
-          prev-result)
-    prev-result)
+(define-private (check-and-resolve-dispute (dispute-entry { 
+    id: uint, 
+    data: {
+      proposal-id: uint,
+      reporter: principal,
+      defendant: principal,
+      evidence: (string-utf8 1000),
+      resolution: (optional (string-utf8 500)),
+      resolved: bool
+    }
+  }) (acc (response bool uint))) ;; item, accumulator
+  (let (
+    (dispute-id (get id dispute-entry))
+    (dispute-data (get data dispute-entry))
+  )
+    (if (get resolved dispute-data) ;; If already resolved, return accumulator unchanged
+        acc
+        ;; Else, try to resolve
+        (match (map-get? proposals { proposal-id: (get proposal-id dispute-data) })
+          proposal ;; Found associated proposal
+            (if (and (is-eq (get proposal-type proposal) DISPUTE-RESOLUTION) ;; Check type
+                     (is-some (get target-dispute-id proposal)) ;; Check target ID exists
+                     (is-eq (unwrap-panic (get target-dispute-id proposal)) dispute-id)) ;; Check target ID matches
+              (begin ;; IDs match, resolve the dispute
+                (map-set disputes
+                  { dispute-id: dispute-id }
+                  (merge dispute-data { resolution: (get parameter-value proposal), resolved: true }))
+                (ok true)) ;; Return success as the new accumulator
+              acc) ;; Proposal doesn't match, return accumulator unchanged
+          acc ;; Proposal not found, return accumulator unchanged
+        )
+    )
+  )
 )
 
 ;; Public functions
@@ -191,7 +177,8 @@
         votes-for: u0,
         votes-against: u0,
         status: "active",
-        executed: false
+        executed: false,
+        target-dispute-id: none
       }
     )
     
@@ -202,68 +189,6 @@
   )
 )
 
-(define-public (vote (proposal-id uint) (vote-for bool))
-  (let (
-    (voting-power (calculate-voting-power tx-sender))
-  )
-    ;; Check if proposal exists and is active
-    (asserts! (is-proposal-active proposal-id) ERR-PROPOSAL-EXPIRED)
-    
-    ;; Check if voter has already voted
-    (asserts! (is-none (map-get? votes { proposal-id: proposal-id, voter: tx-sender }))
-              ERR-ALREADY-VOTED)
-    
-    ;; Record the vote
-    (map-set votes 
-      { proposal-id: proposal-id, voter: tx-sender } 
-      { vote: vote-for, weight: voting-power }
-    )
-    
-    ;; Update vote counts in the proposal
-    (match (map-get? proposals { proposal-id: proposal-id })
-      proposal (map-set proposals 
-                { proposal-id: proposal-id }
-                (merge proposal {
-                  votes-for: (if vote-for 
-                               (+ (get votes-for proposal) voting-power) 
-                               (get votes-for proposal)),
-                  votes-against: (if vote-for 
-                                   (get votes-against proposal) 
-                                   (+ (get votes-against proposal) voting-power))
-                }))
-      (err ERR-PROPOSAL-NOT-FOUND))
-    
-    (ok true)
-  )
-)
-
-(define-public (finalize-proposal (proposal-id uint))
-  (match (map-get? proposals { proposal-id: proposal-id })
-    proposal (begin
-      ;; Check if proposal is active and voting period has ended
-      (asserts! (is-eq (get status proposal) "active") ERR-PROPOSAL-NOT-FOUND)
-      (asserts! (> block-height (get expiration-height proposal)) ERR-PROPOSAL-ACTIVE)
-      
-      (let (
-        (total-votes (+ (get votes-for proposal) (get votes-against proposal)))
-        (vote-percentage (if (> total-votes u0)
-                          (* (/ (* (get votes-for proposal) u100) total-votes) u1)
-                          u0))
-        (new-status (if (>= vote-percentage VOTE-THRESHOLD-PERCENT) "passed" "rejected"))
-      )
-        ;; Update proposal status
-        (map-set proposals 
-          { proposal-id: proposal-id }
-          (merge proposal { status: new-status })
-        )
-        
-        ;; If passed, execute the proposal
-        (if (is-eq new-status "passed")
-          (execute-proposal proposal-id)
-          (ok false))
-      ))
-    ERR-PROPOSAL-NOT-FOUND)
-)
 
 (define-public (create-dispute 
   (defendant principal) 
@@ -309,10 +234,17 @@
                            title 
                            description 
                            DISPUTE-RESOLUTION
-                           (some (to-ascii dispute-id))
+                           none ;; Pass none for parameter-key
                            (some resolution)))
         (proposal-id (unwrap! proposal-result ERR-INVALID-PARAMETER))
+        ;; Get the newly created proposal to update it
+        (proposal-data (unwrap-panic (map-get? proposals { proposal-id: proposal-id })))
       )
+        ;; Update the proposal with the target dispute ID
+        (map-set proposals
+          { proposal-id: proposal-id }
+          (merge proposal-data { target-dispute-id: (some dispute-id) })
+        )
         ;; Update dispute with proposal ID
         (map-set disputes 
           { dispute-id: dispute-id }
@@ -331,11 +263,6 @@
 
 (define-read-only (get-dispute (dispute-id uint))
   (map-get? disputes { dispute-id: dispute-id })
-)
-
-(define-read-only (get-system-parameter (param-key (string-ascii 50)))
-  (default-to { param-value: "undefined" } 
-             (map-get? system-parameters { param-key: param-key }))
 )
 
 (define-read-only (has-voted (proposal-id uint) (voter principal))
@@ -370,8 +297,3 @@
     (ok true)
   )
 )
-
-;; Initialize default system parameters
-(map-set system-parameters { param-key: "verification-threshold" } { param-value: "3" })
-(map-set system-parameters { param-key: "verification-reward" } { param-value: "100" })
-(map-set system-parameters { param-key: "node-registration-fee" } { param-value: "1000" })
